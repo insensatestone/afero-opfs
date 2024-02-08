@@ -3,7 +3,7 @@
 ## About
 It provides an [afero filesystem](https://github.com/spf13/afero/) implementation of an [opfs](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system) backend.
 
-This was created to provide a backend to when used in wasm.
+This was created to provide a backend when used in wasm.
 
 I'm very opened to any improvement through issues or pull-request that might lead to a better implementation or even
 better testing.
