@@ -99,7 +99,6 @@ func (fs *Fs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, err
 		parent:       dir,
 		file_handler: file,
 		file:         js.ValueOf(nil),
-		chunk:        nil,
 		closed:       false,
 		flag:         flag,
 	}, nil
@@ -136,15 +135,18 @@ func (fs *Fs) RemoveAll(name string) error {
 	var err error
 	dir := fs.root
 	dira := strings.Split(strings.Trim(dirs, string(filepath.Separator)), string(filepath.Separator))
+	// slog.Info("remove all", "dirs", dira)
 	for idx, dirname := range dira {
 		if idx < len(dira)-1 {
 			dir, err = async.Await(dir.Call("getDirectoryHandle", dirname, map[string]interface{}{"create": false}))
 			if err != nil {
 				return err
 			}
+			// slog.Info("remove all", "dir", dirname)
 		}
 	}
-	_, err = async.Await(dir.Call("removeEntry", dira[len(dira)-1]))
+	_, err = async.Await(dir.Call("removeEntry", dira[len(dira)-1], map[string]any{"recursive": true}))
+	// slog.Info("remove all", "lastdir", dir.Call("name"))
 	if err != nil {
 		return err
 	}
