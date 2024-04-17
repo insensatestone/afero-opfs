@@ -10,8 +10,6 @@ better testing.
 
 ## TO DO
 - readdir
-- seek from end
-
 
 ## How to use
 ```golang
