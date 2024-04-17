@@ -1,12 +1,13 @@
 package opfs
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path"
+	"sync"
 	"syscall/js"
 
 	"github.com/insensatestone/afero-opfs/internal/async"
@@ -19,23 +20,29 @@ type File struct {
 	parent       js.Value
 	file_handler js.Value
 	file         js.Value
-	chunk        *bytes.Reader
 	closed       bool
 	flag         int
 	p            int64
+	once         sync.Once
 }
 
+func (f *File) getFileHandle() error {
+	f.once.Do(func() {
+
+		fa, err := async.Await(f.file_handler.Call("createSyncAccessHandle"))
+		if err != nil {
+			slog.Error("init file sync accesss handle failed", "err", err.Error())
+		}
+		f.file = fa
+	})
+	if f.file.IsNull() {
+		return errors.New("init file sync accesss handle failed")
+	}
+	return nil
+}
 func (f *File) Name() string { return f.name }
 
 func (f *File) Readdir(n int) ([]os.FileInfo, error) {
-
-	// if n <= 0 {
-	// 	return f.ReaddirAll()
-	// }
-
-	// var fis = make([]os.FileInfo, 0)
-
-	// return fis, nil
 	return nil, ErrNotImplemented
 }
 
@@ -80,10 +87,16 @@ func (f *File) Sync() error {
 }
 
 func (f *File) Truncate(len int64) error {
-	if !f.file.IsNull() && !f.file.IsUndefined() {
+	if !f.closed {
+		err := f.getFileHandle()
+		if err != nil {
+			return err
+		}
 		f.file.Call("truncate", len)
+	} else {
+		return fs.ErrClosed
 	}
-	return ErrNotImplemented
+	return nil
 }
 
 func (f *File) WriteString(s string) (int, error) {
@@ -91,10 +104,12 @@ func (f *File) WriteString(s string) (int, error) {
 }
 
 func (f *File) Close() error {
-	f.closed = true
-	if !f.file.IsNull() && !f.file.IsUndefined() {
-		f.file.Call("flush")
-		f.file.Call("close")
+	if !f.closed {
+		f.closed = true
+		if !f.file.IsNull() && !f.file.IsUndefined() {
+			f.file.Call("flush")
+			f.file.Call("close")
+		}
 	}
 	return nil
 }
@@ -106,12 +121,9 @@ func (f *File) Read(p []byte) (int, error) {
 	if os.O_WRONLY&f.flag != 0 {
 		return 0, fs.ErrPermission
 	}
-	if f.file.IsNull() {
-		fa, err := async.Await(f.file_handler.Call("createSyncAccessHandle"))
-		if err != nil {
-			return 0, err
-		}
-		f.file = fa
+	err := f.getFileHandle()
+	if err != nil {
+		return 0, err
 	}
 	jb := js.Global().Get("Uint8Array").New(len(p))
 	nval := f.file.Call("read", jb, map[string]interface{}{"at": f.p})
@@ -143,9 +155,17 @@ func (f *File) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekCurrent:
 		f.p = f.p + offset
 	case io.SeekEnd:
+		err := f.getFileHandle()
+		if err != nil {
+			return 0, err
+		}
+		js_size := f.file.Call("getSize")
+		f.p = int64(js_size.Int()) + offset
 		return 0, ErrNotImplemented
 	}
-
+	if f.p < 0 {
+		f.p = 0
+	}
 	return f.p, nil
 }
 
@@ -157,12 +177,9 @@ func (f *File) Write(b []byte) (int, error) {
 		return 0, fs.ErrPermission
 	}
 
-	if f.file.IsNull() {
-		fa, err := async.Await(f.file_handler.Call("createSyncAccessHandle"))
-		if err != nil {
-			return 0, err
-		}
-		f.file = fa
+	err := f.getFileHandle()
+	if err != nil {
+		return 0, err
 	}
 	jb := js.Global().Get("Uint8Array").New(len(b))
 	js.CopyBytesToJS(jb, b)
