@@ -15,7 +15,7 @@ better testing.
 ```golang
 
 import(
-	"github.com/insensatestone/afero-s3/pkg"
+	"github.com/insensatestone/afero-opfs/pkg"
 )
 
 func main() {
