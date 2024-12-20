@@ -9,7 +9,7 @@ I'm very opened to any improvement through issues or pull-request that might lea
 better testing.
 
 ## TO DO
-- readdir
+
 
 ## How to use
 ```golang
