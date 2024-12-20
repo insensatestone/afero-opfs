@@ -17,7 +17,6 @@ var (
 	ErrInvalidPath    = errors.New("invalid path")
 	ErrNotImplemented = errors.New("not implemented")
 	ErrNotSupported   = errors.New("opfs doesn't support this operation")
-	ErrInvalidSeek    = errors.New("invalid seek offset")
 )
 
 type Fs struct {
@@ -70,9 +69,11 @@ func (fs *Fs) Open(name string) (afero.File, error) {
 }
 
 func (fs *Fs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	var is_dir bool
+	var err error
 	dirs, filename := filepath.Split(name)
 	if filename == "" {
-		return nil, ErrInvalidPath
+		is_dir = true
 	}
 
 	create := (flag&os.O_CREATE != 0)
@@ -88,10 +89,12 @@ func (fs *Fs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, err
 			}
 		}
 	}
-
-	file, err := async.Await(dir.Call("getFileHandle", filename, map[string]interface{}{"create": create}))
-	if err != nil {
-		return nil, err
+	file := dir
+	if !is_dir {
+		file, err = async.Await(dir.Call("getFileHandle", filename, map[string]interface{}{"create": create}))
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &File{
 		fs:           fs,
@@ -100,6 +103,7 @@ func (fs *Fs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, err
 		file_handler: file,
 		file:         js.ValueOf(nil),
 		closed:       false,
+		is_dir:       is_dir,
 		flag:         flag,
 	}, nil
 }
@@ -180,19 +184,17 @@ func (fs *Fs) Stat(name string) (os.FileInfo, error) {
 		return nil, err
 	}
 
-	fa, err := async.Await(filehandle.Call("createSyncAccessHandle"))
-	if err != nil {
-		return nil, err
-	}
-
-	file_size := fa.Call("getSize").Int()
-	fa.Call("close")
 	last_modified := 0
+	file_size := 0
 	file, err := async.Await(filehandle.Call("getFile"))
 	if err != nil {
 		last_modified = 0
+		file_size = 0
+	} else {
+		last_modified = file.Get("lastModified").Int()
+		file_size = file.Get("size").Int()
 	}
-	last_modified = file.Get("lastModified").Int()
+
 	return NewFileInfo(path.Base(name), false, int64(file_size), time.UnixMilli(int64(last_modified))), nil
 }
 

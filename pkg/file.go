@@ -5,10 +5,11 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
-	"path"
 	"sync"
 	"syscall/js"
+	"time"
 
 	"github.com/insensatestone/afero-opfs/internal/async"
 	"github.com/spf13/afero"
@@ -24,12 +25,18 @@ type File struct {
 	flag         int
 	p            int64
 	once         sync.Once
+	is_dir       bool
 }
 
 func (f *File) getFileHandle() error {
 	f.once.Do(func() {
-
-		fa, err := async.Await(f.file_handler.Call("createSyncAccessHandle"))
+		var fa js.Value
+		var err error
+		if os.O_RDONLY&f.flag != 0 {
+			fa, err = async.Await(f.file_handler.Call("createSyncAccessHandle", map[string]interface{}{"mode": "read-only"}))
+		} else {
+			fa, err = async.Await(f.file_handler.Call("createSyncAccessHandle"))
+		}
 		if err != nil {
 			slog.Error("init file sync accesss handle failed", "err", err.Error())
 		}
@@ -43,33 +50,74 @@ func (f *File) getFileHandle() error {
 func (f *File) Name() string { return f.name }
 
 func (f *File) Readdir(n int) ([]os.FileInfo, error) {
-	return nil, ErrNotImplemented
-}
+	if !f.is_dir {
+		return nil, fs.ErrInvalid
+	}
+	if n <= 0 {
+		n = math.MaxInt32
+	}
+	entries := f.file_handler.Call("values")
 
-func (f *File) ReaddirAll() ([]os.FileInfo, error) {
-	var fileInfos []os.FileInfo
-	for {
-		infos, err := f.Readdir(100)
-		fileInfos = append(fileInfos, infos...)
+	var fis = make([]os.FileInfo, 0)
+
+	for i := 0; i < n; i++ {
+		next, err := async.Await(entries.Call("next"))
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
+			return nil, err
+		}
+		if !next.Get("done").Bool() {
+			handle := next.Get("value")
+			if handle.Get("kind").String() == "file" {
+				file, err := async.Await(handle.Call("getFile"))
+				last_modified := 0
+				size := 0
+				if err != nil {
+					last_modified = 0
+					size = 0
+				} else {
+					last_modified = file.Get("lastModified").Int()
+					size = file.Get("size").Int()
+				}
+
+				fis = append(fis, NewFileInfo(handle.Get("name").String(), false, int64(size), time.UnixMilli(int64(last_modified))))
 			} else {
-				return nil, err
+				fis = append(fis, NewFileInfo(handle.Get("name").String(), true, 0, time.Unix(0, 0)))
 			}
+		} else {
+			break
 		}
 	}
-	return fileInfos, nil
+
+	return fis, nil
 }
 
+// func (f *File) ReaddirAll() ([]os.FileInfo, error) {
+// 	var fileInfos []os.FileInfo
+// 	for {
+// 		infos, err := f.Readdir(100)
+// 		fileInfos = append(fileInfos, infos...)
+// 		if err != nil {
+// 			if errors.Is(err, io.EOF) {
+// 				break
+// 			} else {
+// 				return nil, err
+// 			}
+// 		}
+// 	}
+// 	return fileInfos, nil
+// }
+
 func (f *File) Readdirnames(n int) ([]string, error) {
+	if !f.is_dir {
+		return nil, fs.ErrInvalid
+	}
 	fi, err := f.Readdir(n)
 	if err != nil {
 		return nil, err
 	}
 	names := make([]string, len(fi))
 	for i, f := range fi {
-		_, names[i] = path.Split(f.Name())
+		names[i] = f.Name()
 	}
 	return names, nil
 }
@@ -80,6 +128,9 @@ func (f *File) Stat() (os.FileInfo, error) {
 }
 
 func (f *File) Sync() error {
+	if f.is_dir {
+		return fs.ErrInvalid
+	}
 	if !f.file.IsNull() && !f.file.IsUndefined() {
 		f.file.Call("flush")
 	}
@@ -87,6 +138,9 @@ func (f *File) Sync() error {
 }
 
 func (f *File) Truncate(len int64) error {
+	if f.is_dir {
+		return fs.ErrInvalid
+	}
 	if !f.closed {
 		err := f.getFileHandle()
 		if err != nil {
@@ -100,6 +154,9 @@ func (f *File) Truncate(len int64) error {
 }
 
 func (f *File) WriteString(s string) (int, error) {
+	if f.is_dir {
+		return 0, fs.ErrInvalid
+	}
 	return f.Write([]byte(s))
 }
 
@@ -115,8 +172,11 @@ func (f *File) Close() error {
 }
 
 func (f *File) Read(p []byte) (int, error) {
+	if f.is_dir {
+		return 0, fs.ErrInvalid
+	}
 	if f.closed {
-		return 0, afero.ErrFileClosed
+		return 0, fs.ErrClosed
 	}
 	if os.O_WRONLY&f.flag != 0 {
 		return 0, fs.ErrPermission
@@ -136,6 +196,9 @@ func (f *File) Read(p []byte) (int, error) {
 }
 
 func (f *File) ReadAt(p []byte, off int64) (n int, err error) {
+	if f.is_dir {
+		return 0, fs.ErrInvalid
+	}
 	_, err = f.Seek(off, io.SeekStart)
 	if err != nil {
 		return
@@ -145,6 +208,9 @@ func (f *File) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 func (f *File) Seek(offset int64, whence int) (int64, error) {
+	if f.is_dir {
+		return 0, fs.ErrInvalid
+	}
 	if f.closed {
 		return 0, afero.ErrFileClosed
 	}
@@ -161,7 +227,6 @@ func (f *File) Seek(offset int64, whence int) (int64, error) {
 		}
 		js_size := f.file.Call("getSize")
 		f.p = int64(js_size.Int()) + offset
-		return 0, ErrNotImplemented
 	}
 	if f.p < 0 {
 		f.p = 0
@@ -170,8 +235,11 @@ func (f *File) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *File) Write(b []byte) (int, error) {
+	if f.is_dir {
+		return 0, fs.ErrInvalid
+	}
 	if f.closed {
-		return 0, afero.ErrFileClosed
+		return 0, fs.ErrClosed
 	}
 	if os.O_RDONLY&f.flag != 0 {
 		return 0, fs.ErrPermission
@@ -189,6 +257,9 @@ func (f *File) Write(b []byte) (int, error) {
 }
 
 func (f *File) WriteAt(p []byte, off int64) (n int, err error) {
+	if f.is_dir {
+		return 0, fs.ErrInvalid
+	}
 	_, err = f.Seek(off, 0)
 	if err != nil {
 		return 0, err
